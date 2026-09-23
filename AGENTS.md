@@ -45,3 +45,12 @@ Original source baseline: `bfb44fa3b00e2cc8820536fb58e375d7269ef90a`. See `docs/
 - The Release `latest` was replaced successfully and now points to commit `1edb09f33fddd204dab1c1d48c1bb28e714d7560`.
 - Current IPA: `LocationSpoofer-unsigned.ipa`, 4,207,901 bytes, SHA-256 `0711839ed3dc1c9da2bcc43bb0907cadc4937c0eba16435a84aaf661a1c91d10`.
 - Real-device behavior still requires installing/signing this new IPA and retrying location spoofing; CI verifies build/package correctness, not GPS behavior on-device.
+
+### 2026-09-23 iOS 27 / persistent VPN fix
+- Found an explicit app-side `stopVPNTunnel()` after the restart-location tutorial. This was the direct cause of the VPN appearing to disable itself; it has been removed.
+- Spoofing now enables `NEOnDemandRuleConnect` with `isOnDemandEnabled = true`. The app also explicitly reconnects on launch and after an unexpected `.disconnected` status while spoofing is active.
+- Disabling spoofing first disables/saves On Demand and only then stops the tunnel, preventing immediate unwanted reconnects.
+- The Packet Tunnel is now proxy-only: no default IPv4 route is claimed because `packetFlow` is intentionally unused. HTTP/S proxy settings use catch-all `matchDomains = [""]`; non-proxy IP traffic stays on the normal interface.
+- The old custom DNS override was removed. This avoids forcing Italian/iOS 27 devices through the upstream Chinese DNS pair and reduces interaction with iOS 27 Connectivity Assist.
+- The tunnel stores the last `NEProviderStopReason` in the App Group for future diagnostics.
+- Apple iOS 27 release notes do not document a breaking Packet Tunnel API change. Current Apple Developer Forum reports do describe intermittent NetworkExtension path bypass with Connectivity Assist, so keep the proxy-only routing and On Demand recovery logic unless a confirmed Apple fix supersedes it.

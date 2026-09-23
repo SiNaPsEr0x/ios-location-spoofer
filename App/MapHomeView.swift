@@ -126,6 +126,7 @@ struct MapHomeView: View {
     @State private var spoofedDisplayCoord: CLLocationCoordinate2D? = nil
     @State private var lastKnownUserCoord: CLLocationCoordinate2D? = nil
     @State private var realUserCoord: CLLocationCoordinate2D? = nil
+    @State private var autoReconnectPending: Bool = false
 
     var body: some View {
         ZStack {
@@ -208,6 +209,7 @@ struct MapHomeView: View {
         }
         .onAppear {
             refreshVPNStatus()
+            ContentView.autoStartVPNIfNeeded()
             loadSavedLocations()
             loadRecentLocations()
             // 启动时单次定位到用户真实位置,移地图镜头过去(失败/拒权保持默认)
@@ -232,7 +234,7 @@ struct MapHomeView: View {
                 spoofingState = .off
             }
             NotificationCenter.default.addObserver(forName: .NEVPNStatusDidChange, object: nil, queue: .main) { _ in
-                refreshVPNStatus()
+                handleVPNStatusChange()
             }
         }
     }
@@ -485,9 +487,13 @@ struct MapHomeView: View {
                         }
                     }
                 }
-                // 定位已进系统缓存焊死,关 VPN 恢复全手机网络;伪装位置由 iOS 缓存维持,不受影响。
-                // 状态卡 .on 独立于 vpnConnected(全局观察者只刷 vpnStatus/vpnConnected,不重置 spoofingState)。
-                ContentView.vpnManager?.connection.stopVPNTunnel()
+                // Keep the VPN active. On iOS 27 the proxy must remain available,
+                // and On Demand will restore it if the system tears the session down.
+                ContentView.setSpoofingAutoConnectEnabled(true)
+                if let manager = ContentView.vpnManager {
+                    ContentView.configureOnDemand(enabled: true, manager: manager)
+                }
+                DiagLog.add("[auto-vpn] tutorial completed; keeping tunnel active")
             }
             .font(.headline)
             .frame(maxWidth: .infinity)
@@ -717,6 +723,7 @@ struct MapHomeView: View {
         // GCJ-02 转 WGS-84
         let converted = CoordinateConverter.gcj02ToWgs84(lat: coord.latitude, lng: coord.longitude)
         LocationConfiguration.shared.setCoordinates(latitude: converted.latitude, longitude: converted.longitude)
+        ContentView.setSpoofingAutoConnectEnabled(true)
         UserDefaults.standard.set(name, forKey: "currentLocationName")
         currentLocationName = name
         DiagLog.add("Coordinates written (WGS-84) to LocationConfiguration + UserDefaults")
@@ -848,21 +855,11 @@ struct MapHomeView: View {
         latitude: Double,
         longitude: Double
     ) throws {
-        guard let session = manager.connection as? NETunnelProviderSession else {
-            throw NSError(
-                domain: "LocationSpoofer.Tunnel",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "VPN session is not a NETunnelProviderSession"]
-            )
-        }
-
-        let options: [String: NSObject] = [
-            "spoofEnabled": NSNumber(value: true),
-            "spoofLatitude": NSNumber(value: latitude),
-            "spoofLongitude": NSNumber(value: longitude),
-        ]
-        DiagLog.add("[VPN] startTunnel options coords=(\(String(format: "%.6f", latitude)), \(String(format: "%.6f", longitude)))")
-        try session.startTunnel(options: options)
+        try ContentView.startTunnel(
+            manager: manager,
+            latitude: latitude,
+            longitude: longitude
+        )
     }
 
     /// 通过 NETunnelProviderSession.sendProviderMessage 向 Tunnel 进程查询 Go 代理当前持有的坐标。
@@ -1034,6 +1031,9 @@ struct MapHomeView: View {
 
         let state = RestartState()
 
+        // Persist Connect On Demand before intentionally cycling the tunnel.
+        ContentView.configureOnDemand(enabled: true, manager: manager)
+
         let finish: (Bool, String?) -> Void = { ok, errMsg in
             guard !state.finished else { return }
             state.finished = true
@@ -1128,11 +1128,9 @@ struct MapHomeView: View {
         // 进入 pending(关闭中)
         spoofingState = .pending(name: oldName, isClosing: true)
 
-        // 关 VPN
-        if let manager = ContentView.vpnManager {
-            manager.connection.stopVPNTunnel()
-        }
-        // 清坐标
+        // Disable On Demand before stopping, otherwise iOS can immediately reconnect.
+        ContentView.disableAutoConnectAndStop()
+        // Clear coordinates only after auto-reconnect has been disabled.
         LocationConfiguration.shared.clearCoordinates()
         UserDefaults.standard.removeObject(forKey: "currentLocationName")
         currentLocationName = ""
@@ -1210,6 +1208,24 @@ struct MapHomeView: View {
         if let manager = ContentView.vpnManager {
             vpnStatus = manager.connection.status
             vpnConnected = (vpnStatus == .connected)
+        }
+    }
+
+    private func handleVPNStatusChange() {
+        refreshVPNStatus()
+
+        guard ContentView.shouldKeepSpoofingActive,
+              !isSpoofing,
+              !autoReconnectPending,
+              vpnStatus == .disconnected else {
+            return
+        }
+
+        autoReconnectPending = true
+        DiagLog.add("[auto-vpn] unexpected disconnect; scheduling reconnect")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) {
+            autoReconnectPending = false
+            ContentView.autoStartVPNIfNeeded()
         }
     }
 }

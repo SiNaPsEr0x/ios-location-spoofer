@@ -83,7 +83,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     private func createTunnelSettings(proxyHost: String, proxyPort: Int)
         -> NEPacketTunnelNetworkSettings
     {
-        let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
+        // iOS 27 compatibility: this extension is an HTTP/S proxy, not an IP VPN.
+        // Do not claim a default IP route when packetFlow is intentionally unused.
+        let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "192.0.2.1")
+
         let proxySettings = NEProxySettings()
         proxySettings.httpServer = NEProxyServer(address: proxyHost, port: proxyPort)
         proxySettings.httpsServer = NEProxyServer(address: proxyHost, port: proxyPort)
@@ -91,23 +94,32 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         proxySettings.httpEnabled = true
         proxySettings.httpsEnabled = true
         proxySettings.excludeSimpleHostnames = true
+
+        // Empty-string catch-all is required when the packet tunnel does not claim
+        // a default IP route; otherwise HTTP/S clients may bypass the proxy.
+        proxySettings.matchDomains = [""]
         proxySettings.exceptionList = [
-            "192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12",
-            "127.0.0.1", "localhost", "*.local",
+            "192.168.0.0/16",
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "127.0.0.1",
+            "localhost",
+            "*.local",
         ]
         settings.proxySettings = proxySettings
+
+        // A documentation-only /32 address gives the virtual interface a valid
+        // non-loopback identity without routing ordinary IP packets into packetFlow.
         let ipv4Settings = NEIPv4Settings(
-            addresses: [settings.tunnelRemoteAddress],
+            addresses: ["192.0.2.2"],
             subnetMasks: ["255.255.255.255"]
         )
-        ipv4Settings.includedRoutes = [NEIPv4Route.default()]
-        ipv4Settings.excludedRoutes = [
-            NEIPv4Route(destinationAddress: "192.168.0.0", subnetMask: "255.255.0.0"),
-            NEIPv4Route(destinationAddress: "10.0.0.0", subnetMask: "255.0.0.0"),
-            NEIPv4Route(destinationAddress: "172.16.0.0", subnetMask: "255.240.0.0"),
-        ]
+        ipv4Settings.includedRoutes = []
         settings.ipv4Settings = ipv4Settings
-        settings.dnsSettings = NEDNSSettings(servers: ["223.5.5.5", "114.114.114.114"])
+
+        // Do not override system DNS. iOS 27 can use multiple network paths
+        // (Connectivity Assist); the local HTTP proxy receives host names and
+        // resolves its own upstream connections.
         settings.mtu = 1500
         return settings
     }
@@ -116,6 +128,9 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         with reason: NEProviderStopReason, completionHandler: @escaping () -> Void
     ) {
         os_log("Tunnel stopping, reason: %ld", log: OSLog.default, type: .info, reason.rawValue)
+        let defaults = UserDefaults(suiteName: "group.dev.duti.location-spoofer")
+        defaults?.set(reason.rawValue, forKey: "lastTunnelStopReason")
+        defaults?.set(Date().timeIntervalSince1970, forKey: "lastTunnelStopTimestamp")
         if let proxy = goLocationSpoofer {
             if proxy.stopProxy() {
                 os_log("Go proxy stopped successfully", log: OSLog.default, type: .info)
