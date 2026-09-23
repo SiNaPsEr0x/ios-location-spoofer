@@ -54,3 +54,9 @@ Original source baseline: `bfb44fa3b00e2cc8820536fb58e375d7269ef90a`. See `docs/
 - The old custom DNS override was removed. This avoids forcing Italian/iOS 27 devices through the upstream Chinese DNS pair and reduces interaction with iOS 27 Connectivity Assist.
 - The tunnel stores the last `NEProviderStopReason` in the App Group for future diagnostics.
 - Apple iOS 27 release notes do not document a breaking Packet Tunnel API change. Current Apple Developer Forum reports do describe intermittent NetworkExtension path bypass with Connectivity Assist, so keep the proxy-only routing and On Demand recovery logic unless a confirmed Apple fix supersedes it.
+
+### iOS 27 build verification
+- Run 6 (`35916907202`) on commit `bdea353c758c3f44f5bacca7a182bfa0d19f1377` completed successfully.
+- The iOS 27 proxy-only tunnel, Connect On Demand, auto-start/reconnect, and removal of the post-tutorial `stopVPNTunnel()` all compiled and packaged successfully.
+- Release `latest` was replaced with one asset: `LocationSpoofer-unsigned.ipa`, 4,212,400 bytes, SHA-256 `d7f9e4933559318d67ce95004e4dbca691e0ade981f4c18184ca675f4b6baa8d`.
+- CI cannot prove the location spoof succeeds on a physical iOS 27 device; the next validation is to sign/install this exact IPA and retry. If it still fails, inspect the saved tunnel stop reason and diagnostics rather than reverting the persistent-VPN changes.
