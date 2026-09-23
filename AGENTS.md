@@ -38,3 +38,10 @@ Original source baseline: `bfb44fa3b00e2cc8820536fb58e375d7269ef90a`. See `docs/
 - Coordinates are now authoritative in `NETunnelProviderSession.startTunnel(options:)`: the app passes `spoofEnabled`, `spoofLatitude` and `spoofLongitude`; `PacketTunnelProvider.startTunnel(options:)` uses those values directly and only falls back to App Group storage when options are absent.
 - IPC `getCoords` remains diagnostic only and must never block activation. TCP readiness remains the runtime gate because Go receives the explicit coordinates before starting its HTTP proxy.
 - Keep this direct start-options handoff when merging upstream changes.
+
+### Runtime fix verification
+- Run 5 (`35914949898`) on commit `1edb09f33fddd204dab1c1d48c1bb28e714d7560` completed successfully.
+- Xcode compiled the direct `NETunnelProviderSession.startTunnel(options:)` coordinate handoff for both cold start and hot restart.
+- The Release `latest` was replaced successfully and now points to commit `1edb09f33fddd204dab1c1d48c1bb28e714d7560`.
+- Current IPA: `LocationSpoofer-unsigned.ipa`, 4,207,901 bytes, SHA-256 `0711839ed3dc1c9da2bcc43bb0907cadc4937c0eba16435a84aaf661a1c91d10`.
+- Real-device behavior still requires installing/signing this new IPA and retrying location spoofing; CI verifies build/package correctness, not GPS behavior on-device.
