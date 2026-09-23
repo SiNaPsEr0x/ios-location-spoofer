@@ -21,3 +21,7 @@ Replaced certificate-dependent TestFlight workflow with an unsigned cached build
 Validation before push: Bash/YAML/embedded Python syntax, modified Swift parsing and two isolated ARPC tests with the race detector passed locally. Full Go module tests and Xcode archive must be checked in the GitHub Actions run before claiming the IPA works. Device/VPN behavior requires a separately signed on-device test.
 
 Original source baseline: `bfb44fa3b00e2cc8820536fb58e375d7269ef90a`. See `docs/unsigned-ipa.md` for build and recovery guidance.
+
+### Validation follow-up
+- Run 1: Go race tests/vet passed; fixed Apple `lipo` argument order.
+- Run 2: Go tests, Go iOS archive and XcodeGen passed; Xcode exposed two pre-existing unterminated Swift diagnostic strings, one unescaped settings string, and a missing `libgolocationspoofer` search path. These are fixed in the next source commit; final IPA success must still be verified from Actions.

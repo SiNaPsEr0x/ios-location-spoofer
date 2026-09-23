@@ -56,11 +56,15 @@ targets:
         HEADER_SEARCH_PATHS:
           - "$(PROJECT_DIR)/GoSpoofer"
         SWIFT_OBJC_BRIDGING_HEADER: "Tunnel/location-spoofer-tunnel-Bridging-Header.h"
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/GoSpoofer/build"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-lgolocationspoofer"
     dependencies:
-      # Link the static archive, never copy it or the Go executable as a resource.
-      - framework: GoSpoofer/build/libgolocationspoofer.a
-        embed: false
-        codeSign: false
+      # The Go c-archive is prebuilt by CI and linked by search path/ld flag.
+      # Do not add it as a source/resource or it can leak into the .appex bundle.
       - sdk: NetworkExtension.framework
 
 schemes:
