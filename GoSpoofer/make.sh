@@ -16,7 +16,7 @@ go build -mod=readonly -trimpath -ldflags="-s -w" -buildmode=c-archive \
   -tags=ios -o "$BUILD_DIR/libgolocationspoofer.a" .
 test -s "$BUILD_DIR/libgolocationspoofer.a"
 test -s "$BUILD_DIR/libgolocationspoofer.h"
-xcrun lipo -verify_arch arm64 "$BUILD_DIR/libgolocationspoofer.a"
+xcrun lipo "$BUILD_DIR/libgolocationspoofer.a" -verify_arch arm64
 cp "$BUILD_DIR/libgolocationspoofer.h" "$SCRIPT_DIR/golocationspoofer.h"
 ln -sfn build/libgolocationspoofer.a "$SCRIPT_DIR/libgolocationspoofer.a"
 echo 'Go static library and matching C header are ready.'

@@ -89,7 +89,7 @@ jobs:
           test -s GoSpoofer/build/libgolocationspoofer.a
           test -s GoSpoofer/build/libgolocationspoofer.h
           cp GoSpoofer/build/libgolocationspoofer.h GoSpoofer/golocationspoofer.h
-          xcrun lipo -verify_arch arm64 GoSpoofer/build/libgolocationspoofer.a
+          xcrun lipo GoSpoofer/build/libgolocationspoofer.a -verify_arch arm64
           xcodegen generate --spec project.yml
 
       - name: Cache incremental Xcode build data

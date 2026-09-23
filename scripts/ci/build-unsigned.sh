@@ -46,7 +46,7 @@ for bundle in [app, *extensions]:
     executable = bundle / info['CFBundleExecutable']
     if not executable.is_file():
         raise SystemExit(f'Missing executable: {executable}')
-    subprocess.run(['xcrun', 'lipo', '-verify_arch', 'arm64', str(executable)], check=True)
+    subprocess.run(['xcrun', 'lipo', str(executable), '-verify_arch', 'arm64'], check=True)
     versions.append((info['CFBundleShortVersionString'], info['CFBundleVersion']))
     if bundle.suffix == '.appex' and info.get('NSExtension', {}).get('NSExtensionPointIdentifier') != 'com.apple.networkextension.packet-tunnel':
         raise SystemExit('Missing packet-tunnel extension point')
