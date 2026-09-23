@@ -25,3 +25,10 @@ Run 3 (`35912394315`) on commit `232c1c62ff4d52db4a5ef1d0e3229a29d21af2db` was t
 The next CI revision replaces per-run IPA artifacts with one stable GitHub Release and restores the prior `year.week.day` version scheme. Verify the Release count, asset count, embedded bundle versions and cleanup behavior after the first run of that revision.
 
 Original source baseline: `bfb44fa3b00e2cc8820536fb58e375d7269ef90a`. See `docs/unsigned-ipa.md` for build and recovery guidance.
+
+### Rolling Release verification
+- Run 4 (`35913536096`) on commit `9dfc64786539b627efe41d023c55caa864b1e4b5` completed successfully.
+- Calculated version: `2026.39.3` using Europe/Rome and the `ISO-year.ISO-week.ISO-weekday` scheme.
+- GitHub now contains exactly one Release: tag `latest`, title `Location Spoofer 2026.39.3`.
+- The Release contains exactly one asset: `LocationSpoofer-unsigned.ipa`, 4,207,689 bytes, SHA-256 `02718de3d44f69a950d0e117d0e0e037b9a208a5f4e4dc8713b78b6e0dcb4220`.
+- Historical Actions artifacts were deleted; both the previous successful run and the rolling-Release run report zero retained workflow artifacts.
