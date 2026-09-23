@@ -20,7 +20,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+  actions: write
 
 concurrency:
   group: unsigned-ipa-${{ github.ref }}
@@ -34,16 +35,33 @@ env:
   HOMEBREW_NO_AUTO_UPDATE: '1'
   HOMEBREW_NO_INSTALL_CLEANUP: '1'
   GOTOOLCHAIN: local
+  RELEASE_TAG: latest
 
 jobs:
   build:
-    name: Test and build one unsigned IPA
+    name: Test, build and replace the single Release
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+
+      - name: Set calendar version
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(python3 - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          now = datetime.now(ZoneInfo("Europe/Rome"))
+          iso = now.isocalendar()
+          print(f"{iso.year}.{iso.week:02d}.{iso.weekday}")
+          PY
+          )"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+          echo "APP_VERSION=$version" >> "$GITHUB_ENV"
+          echo "Version: $version"
 
       - name: Set up Go from go.mod
         id: go
@@ -102,21 +120,87 @@ jobs:
 
       - name: Build, package and verify unsigned IPA
         id: ipa
+        env:
+          APP_VERSION: ${{ steps.version.outputs.value }}
         run: bash scripts/ci/build-unsigned.sh
 
-      - name: Upload the single IPA directly
-        id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          path: ${{ steps.ipa.outputs.path }}
-          archive: false
-          if-no-files-found: error
-          overwrite: true
-          retention-days: 30
-
-      - name: Report download and cache status
+      - name: Replace the single GitHub Release
+        id: release
         env:
-          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          GH_TOKEN: ${{ github.token }}
+          APP_VERSION: ${{ steps.version.outputs.value }}
+          IPA_PATH: ${{ steps.ipa.outputs.path }}
+        run: |
+          set -euo pipefail
+          asset_name="$(basename "$IPA_PATH")"
+
+          # There must be only one GitHub Release. Remove every historical release
+          # and its release tag, while preserving unrelated non-release tags.
+          while IFS= read -r tag; do
+            [[ -z "$tag" || "$tag" == "$RELEASE_TAG" ]] && continue
+            echo "Deleting historical release: $tag"
+            gh release delete "$tag" --cleanup-tag --yes
+          done < <(gh release list --limit 1000 --json tagName --jq '.[].tagName')
+
+          # Keep one stable tag and move it to the commit that produced this IPA.
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG"               -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs"               -f ref="refs/tags/$RELEASE_TAG" -f sha="$GITHUB_SHA" >/dev/null
+          fi
+
+          notes="$(cat <<EOF
+          Current unsigned build of Location Spoofer.
+
+          Version: $APP_VERSION
+          Commit: $GITHUB_SHA
+          Architecture: arm64
+          Contents: iOS app + Packet Tunnel extension
+
+          This IPA is unsigned and must be signed with compatible Network Extension and App Group entitlements before installation.
+          EOF
+          )"
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG"               --title "Location Spoofer $APP_VERSION"               --notes "$notes"               --latest
+          else
+            gh release create "$RELEASE_TAG"               --verify-tag               --title "Location Spoofer $APP_VERSION"               --notes "$notes"               --latest
+          fi
+
+          # Keep exactly one asset in the one Release.
+          while IFS= read -r old_asset; do
+            [[ -z "$old_asset" || "$old_asset" == "$asset_name" ]] && continue
+            gh release delete-asset "$RELEASE_TAG" "$old_asset" --yes
+          done < <(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')
+
+          gh release upload "$RELEASE_TAG" "$IPA_PATH" --clobber
+
+          release_count="$(gh release list --limit 1000 --json tagName --jq 'length')"
+          asset_count="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets | length')"
+          [[ "$release_count" -eq 1 ]]
+          [[ "$asset_count" -eq 1 ]]
+
+          release_url="$(gh release view "$RELEASE_TAG" --json url --jq '.url')"
+          echo "url=$release_url" >> "$GITHUB_OUTPUT"
+          echo "version=$APP_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Delete historical Actions artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The Release is the canonical download. Do not keep IPA copies as
+          # GitHub Actions artifacts from this or older workflow runs.
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100"             --jq '.artifacts[].id' |
+          while IFS= read -r artifact_id; do
+            [[ -z "$artifact_id" ]] && continue
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
+          done
+
+      - name: Report Release and cache status
+        env:
+          RELEASE_URL: ${{ steps.release.outputs.url }}
+          APP_VERSION: ${{ steps.release.outputs.version }}
           LIBRARY_CACHE_HIT: ${{ steps.go-library.outputs.cache-hit }}
         run: |
-          printf '\n[Download unsigned IPA](%s)\n\nGo library cache hit: `%s`\n' "$ARTIFACT_URL" "$LIBRARY_CACHE_HIT" >> "$GITHUB_STEP_SUMMARY"
+          printf '\n## Location Spoofer %s\n\n[Download the only current Release](%s)\n\nStable tag: `latest`\n\nGo library cache hit: `%s`\n'             "$APP_VERSION" "$RELEASE_URL" "$LIBRARY_CACHE_HIT" >> "$GITHUB_STEP_SUMMARY"

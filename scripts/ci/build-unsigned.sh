@@ -10,6 +10,17 @@ mkdir -p "$OUTPUT_DIR"
 IPA="$OUTPUT_DIR/LocationSpoofer-unsigned.ipa"
 rm -f "$IPA"
 
+if [[ -z "${APP_VERSION:-}" ]]; then
+  APP_VERSION="$(python3 - <<'PY'
+from datetime import datetime
+from zoneinfo import ZoneInfo
+now = datetime.now(ZoneInfo("Europe/Rome"))
+iso = now.isocalendar()
+print(f"{iso.year}.{iso.week:02d}.{iso.weekday}")
+PY
+)"
+fi
+
 xcodebuild archive \
   -project location-spoofer.xcodeproj \
   -scheme location-spoofer \
@@ -22,16 +33,18 @@ xcodebuild archive \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
   CODE_SIGN_IDENTITY= EXPANDED_CODE_SIGN_IDENTITY= \
   DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= \
-  CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER:-1}" \
+  MARKETING_VERSION="$APP_VERSION" \
+  CURRENT_PROJECT_VERSION="$APP_VERSION" \
   | tee "$TEMP_ROOT/location-spoofer-xcodebuild.log"
 
 APP_SOURCE="$STAGING/LocationSpoofer.xcarchive/Products/Applications/location-spoofer.app"
 test -d "$APP_SOURCE"
 mkdir -p "$STAGING/Payload"
 ditto "$APP_SOURCE" "$STAGING/Payload/location-spoofer.app"
-python3 - "$STAGING/Payload" <<'PY'
+python3 - "$STAGING/Payload" "$APP_VERSION" <<'PY'
 import pathlib, plistlib, shutil, subprocess, sys
 payload = pathlib.Path(sys.argv[1])
+expected_version = sys.argv[2]
 apps = list(payload.glob('*.app'))
 if len(apps) != 1:
     raise SystemExit('Expected exactly one app in Payload')
@@ -47,7 +60,10 @@ for bundle in [app, *extensions]:
     if not executable.is_file():
         raise SystemExit(f'Missing executable: {executable}')
     subprocess.run(['xcrun', 'lipo', str(executable), '-verify_arch', 'arm64'], check=True)
-    versions.append((info['CFBundleShortVersionString'], info['CFBundleVersion']))
+    version_pair = (info['CFBundleShortVersionString'], info['CFBundleVersion'])
+    versions.append(version_pair)
+    if version_pair != (expected_version, expected_version):
+        raise SystemExit(f'Unexpected bundle version for {bundle}: {version_pair}, expected {expected_version}')
     if bundle.suffix == '.appex' and info.get('NSExtension', {}).get('NSExtensionPointIdentifier') != 'com.apple.networkextension.packet-tunnel':
         raise SystemExit('Missing packet-tunnel extension point')
 if len(set(versions)) != 1:
@@ -76,16 +92,17 @@ for path in app.rglob('*'):
     checked += 1
 if checked < 2:
     raise SystemExit('App and VPN Mach-O executables were not both checked')
-print(f'Validated one app, one VPN extension, {checked} unsigned Mach-O files.')
+print(f'Validated version {expected_version}: one app, one VPN extension, {checked} unsigned Mach-O files.')
 PY
 (
   cd "$STAGING"
   COPYFILE_DISABLE=1 /usr/bin/zip -q -r -y -X "$IPA" Payload
 )
 unzip -tq "$IPA"
-python3 - "$IPA" <<'PY'
+python3 - "$IPA" "$APP_VERSION" <<'PY'
 import hashlib, os, pathlib, sys, zipfile
 ipa = pathlib.Path(sys.argv[1])
+version = sys.argv[2]
 if len(list(ipa.parent.glob('*.ipa'))) != 1:
     raise SystemExit('Output directory must contain exactly one IPA')
 with zipfile.ZipFile(ipa) as z:
@@ -95,11 +112,13 @@ with zipfile.ZipFile(ipa) as z:
     if any('_CodeSignature/' in n or n.endswith(('.mobileprovision', '.a')) for n in names):
         raise SystemExit('IPA contains a signature, profile or static archive')
 sha = hashlib.sha256(ipa.read_bytes()).hexdigest()
-print(f'{ipa.name}: {ipa.stat().st_size} bytes; SHA256 {sha}')
+print(f'{ipa.name}: version {version}; {ipa.stat().st_size} bytes; SHA256 {sha}')
 if os.environ.get('GITHUB_OUTPUT'):
     with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
         f.write(f'path={ipa}\n')
+        f.write(f'sha256={sha}\n')
+        f.write(f'version={version}\n')
 if os.environ.get('GITHUB_STEP_SUMMARY'):
     with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
-        f.write(f'## One unsigned IPA\n\n`{ipa.name}` — {ipa.stat().st_size:,} bytes\n\nSHA256: `{sha}`\n\nApp + VPN extension included. All Mach-O binaries verified unsigned.\n')
+        f.write(f'## One unsigned IPA\n\nVersion: `{version}`\n\n`{ipa.name}` — {ipa.stat().st_size:,} bytes\n\nSHA256: `{sha}`\n\nApp + VPN extension included. All Mach-O binaries verified unsigned.\n')
 PY

@@ -3,31 +3,25 @@
 ## Owner requirements
 - Read this file before editing and keep it updated with decisions, verification results and recovery details.
 - Produce exactly one unsigned arm64 IPA containing the app and its VPN extension. Do not add a signed/TestFlight build, a build matrix or duplicate IPA artifacts.
+- Publish exactly one GitHub Release using the stable tag `latest`. Replace its IPA asset in place, remove historical Releases/release tags, and do not retain GitHub Actions IPA artifacts. Workflow-run logs may remain for diagnostics.
+- Versioning follows the previously chosen calendar format `ISO-year.ISO-week.ISO-weekday` in Europe/Rome time, e.g. `2026.39.3`. Use the same value for `CFBundleShortVersionString`, `CFBundleVersion` and the Release title.
 - Automatic builds run only for app/extension source, resources, Go source/dependencies, project.yml or build-script changes on main. Markdown, README, AGENTS.md and workflow-only edits must not automatically compile. Use Run workflow when validating CI-only edits.
 - Keep Go dependencies, the generated Go library/header pair and Xcode incremental build caches. Cache keys must include the Apple toolchain and relevant source inputs.
-- Combine related changes into one commit on main where possible; never force-push to overwrite someone else's work.
+- Combine related changes into one commit on main where possible; never force-push the main branch to overwrite someone else's work. The stable Release tag `latest` is intentionally moved to the verified build commit.
 - Keep the recovery copy in `SiNaPsEr0x/Pubblici/backups/github-actions/ios-location-spoofer/` up to date when changing CI. Do not put backup YAML under Pubblici/.github/workflows. Never copy signing material or tokens.
 
 ## Project invariants
 - `project.yml` is the source of truth. CI regenerates the checked-in Xcode project; editing only project.pbxproj does not alter CI output.
 - Keep bundle IDs, App Group, VPN extension and CGo exports compatible. Unsigned builds do not waive the signing/entitlement requirements for installation on a real device.
 - Keep user-visible UI in English. Do not change routing, DNS, location-spoofing behavior or certificates merely to modify the build pipeline.
-- GoSpoofer/build/libgolocationspoofer.a is a link dependency, never a bundle resource. HACKS.md describes a historical workaround; do not reapply its PBX patch with the current project.yml.
+- GoSpoofer/build/libgolocationspoofer.a is a link dependency, never a bundle resource. HACKS.md describes the current linking constraint; do not restore the old manual PBX patch.
 - Keep existing tests. Repair invalid fixtures and add regressions instead of skipping failures. Current checks include Go race tests and vet, unsigned Mach-O verification, matching app/extension versions and ZIP integrity.
 
 ## 2026-09-23 maintenance
-Replaced certificate-dependent TestFlight workflow with an unsigned cached build; removed unused SwiftNIO/swift-log packages, invalid Swift language mode and duplicate/resource-only build inputs. Added Combine imports, exact ARPC reads and FunctionId preservation, HTTP passthrough body restoration, and proxy cleanup after tunnel setup failure. Four original test names are retained and five regression tests added.
+Replaced certificate-dependent TestFlight workflow with an unsigned cached build; removed unused SwiftNIO/swift-log packages, invalid Swift language mode and duplicate/resource-only build inputs. Added Combine imports, exact ARPC reads and FunctionId preservation, HTTP passthrough body restoration, proxy cleanup after tunnel setup failure, repaired pre-existing Swift string errors and corrected Go c-archive linking.
 
-Validation before push: Bash/YAML/embedded Python syntax, modified Swift parsing and two isolated ARPC tests with the race detector passed locally. Full Go module tests and Xcode archive must be checked in the GitHub Actions run before claiming the IPA works. Device/VPN behavior requires a separately signed on-device test.
+Run 3 (`35912394315`) on commit `232c1c62ff4d52db4a5ef1d0e3229a29d21af2db` was the first fully successful unsigned IPA build: tests, Go iOS archive, Xcode archive, unsigned validation and direct artifact upload passed.
+
+The next CI revision replaces per-run IPA artifacts with one stable GitHub Release and restores the prior `year.week.day` version scheme. Verify the Release count, asset count, embedded bundle versions and cleanup behavior after the first run of that revision.
 
 Original source baseline: `bfb44fa3b00e2cc8820536fb58e375d7269ef90a`. See `docs/unsigned-ipa.md` for build and recovery guidance.
-
-### Validation follow-up
-- Run 1: Go race tests/vet passed; fixed Apple `lipo` argument order.
-- Run 2: Go tests, Go iOS archive and XcodeGen passed; Xcode exposed two pre-existing unterminated Swift diagnostic strings, one unescaped settings string, and a missing `libgolocationspoofer` search path. These are fixed in the next source commit; final IPA success must still be verified from Actions.
-
-### Final verification
-- Run 3 (`35912394315`) on commit `232c1c62ff4d52db4a5ef1d0e3229a29d21af2db` completed successfully on 2026-09-23.
-- Go module verification, race tests, vet, iOS arm64 c-archive build, XcodeGen, Xcode archive, unsigned Mach-O checks, IPA integrity checks and direct single-file artifact upload all passed.
-- Final artifact: `LocationSpoofer-unsigned.ipa`, 4,207,693 bytes, SHA-256 `7f4fc03af7be6bae698a473d3224d4a1484cbf29d7ab41d087f2d0553013eb23`, artifact ID `10773308543`.
-- CI saved Go, Go iOS archive/header and Xcode DerivedData caches after the successful run.
