@@ -38,4 +38,4 @@ Unsigned means ready for subsequent signing, not directly installable. The signe
 
 ## Recovery after an upstream update
 
-The independent copy is in `SiNaPsEr0x/Pubblici/backups/github-actions/ios-location-spoofer/`. Keep the customized workflow, project.yml and both build scripts together. `original/build.yml` is the historical TestFlight configuration, not the unsigned configuration to restore. Review upstream changes before restoring files; do not reset the entire app to an old revision.
+The independent copy is in `SiNaPsEr0x/Pubblici/ios-location-spoofer/backup/`. Keep the customized workflow, project.yml and both build scripts together. `original/build.yml` is the historical TestFlight configuration, not the unsigned configuration to restore. Review upstream changes before restoring files; do not reset the entire app to an old revision.
