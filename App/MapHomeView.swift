@@ -841,6 +841,30 @@ struct MapHomeView: View {
         attempt()
     }
 
+    /// Avvia il Packet Tunnel passando le coordinate direttamente nelle start options.
+    /// Questo evita di dipendere dalla sincronizzazione UserDefaults/App Group tra app ed estensione.
+    private func startTunnelWithCoordinates(
+        manager: NETunnelProviderManager,
+        latitude: Double,
+        longitude: Double
+    ) throws {
+        guard let session = manager.connection as? NETunnelProviderSession else {
+            throw NSError(
+                domain: "LocationSpoofer.Tunnel",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "VPN session is not a NETunnelProviderSession"]
+            )
+        }
+
+        let options: [String: NSObject] = [
+            "spoofEnabled": NSNumber(value: true),
+            "spoofLatitude": NSNumber(value: latitude),
+            "spoofLongitude": NSNumber(value: longitude),
+        ]
+        DiagLog.add("[VPN] startTunnel options coords=(\(String(format: "%.6f", latitude)), \(String(format: "%.6f", longitude)))")
+        try session.startTunnel(options: options)
+    }
+
     /// 通过 NETunnelProviderSession.sendProviderMessage 向 Tunnel 进程查询 Go 代理当前持有的坐标。
     /// Tunnel 协议:发 "getCoords" UTF-8,收 17 字节(1 字节 enabled + 8 字节 lat LE + 8 字节 lon LE)。
     /// 回调在主线程触发;session 不可用或 sendProviderMessage 抛错均回 nil。
@@ -851,62 +875,52 @@ struct MapHomeView: View {
             completion(nil)
             return
         }
+
+        DiagLog.add("[IPC] getCoords send, VPN status=\(manager.connection.status.diagDesc)")
         let request = Data("getCoords".utf8)
         do {
             try session.sendProviderMessage(request) { response in
                 DispatchQueue.main.async {
-                    guard let data = response, data.count == 17 else {
+                    guard let data = response else {
+                        DiagLog.add("[IPC] getCoords returned nil response")
+                        completion(nil)
+                        return
+                    }
+                    guard data.count == 17 else {
+                        DiagLog.add("[IPC] getCoords invalid response length=\(data.count), expected 17")
                         completion(nil)
                         return
                     }
                     let enabled = data[0] != 0
                     let lat = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 1, as: Double.self) }
                     let lon = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 9, as: Double.self) }
+                    DiagLog.add("[IPC] getCoords response enabled=\(enabled) coords=(\(String(format: "%.6f", lat)), \(String(format: "%.6f", lon)))")
                     completion((lat: lat, lon: lon, enabled: enabled))
                 }
             }
         } catch {
-            DiagLog.add("[IPC] sendProviderMessage error:\(error.localizedDescription)")
+            DiagLog.add("[IPC] sendProviderMessage error: \(error.localizedDescription)")
             completion(nil)
         }
     }
 
-    /// 弹"重启定位服务"教学前,确认 Go 已加载新坐标——根治 App Group UserDefaults 跨进程同步竞态。
-    /// 循环 IPC 查询 Go 当前持有的坐标,与 expected(WGS-84)做 epsilon (1e-5) 比对。
-    /// 匹配 → completion(true);不匹配或 IPC 失败 → 0.3 秒后重试;到总超时仍未匹配 → completion(false)。
-    private func confirmCoordsReady(expectedLat: Double, expectedLon: Double, timeout: TimeInterval, completion: @escaping (Bool) -> Void) {
-        let started = Date()
-        let deadline = started.addingTimeInterval(timeout)
-        DiagLog.add("[confirm] Starting expected=(\(String(format: "%.6f", expectedLat)), \(String(format: "%.6f", expectedLon))) timeout \(Int(timeout))s)")
+    /// Le coordinate sono già state consegnate direttamente nelle start options.
+    /// L'IPC serve soltanto per diagnostica: un eventuale errore IPC non blocca più l'attivazione.
+    private func verifyGoCoordsDiagnostic(expectedLat: Double, expectedLon: Double) {
+        queryGoCoordsViaIPC { result in
+            guard let r = result else {
+                DiagLog.add("[verify] IPC unavailable; continuing because coordinates were supplied in tunnel start options")
+                return
+            }
 
-        var attemptCount = 0
-        func attempt() {
-            attemptCount += 1
-            let myAttempt = attemptCount
-            queryGoCoordsViaIPC { result in
-                if let r = result {
-                    let dLat = abs(r.lat - expectedLat)
-                    let dLon = abs(r.lon - expectedLon)
-                    if dLat < 1e-5 && dLon < 1e-5 {
-                        let elapsed = Date().timeIntervalSince(started)
-                        DiagLog.add("[confirm] Attempt \(myAttempt) matched Go=(\(String(format: "%.6f", r.lat)), \(String(format: "%.6f", r.lon))) enabled=\(r.enabled) (\(String(format: "%.2f", elapsed))s)")
-                        completion(true)
-                        return
-                    }
-                    DiagLog.add("[confirm] Attempt \(myAttempt) mismatch Go=(\(String(format: "%.6f", r.lat)), \(String(format: "%.6f", r.lon))) dLat=\(String(format: "%.6f", dLat)) dLon=\(String(format: "%.6f", dLon)), retry in 0.3s")
-                } else {
-                    DiagLog.add("[confirm] Attempt \(myAttempt) IPC failed, retry in 0.3s")
-                }
-                if Date() < deadline {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { attempt() }
-                } else {
-                    let elapsed = Date().timeIntervalSince(started)
-                    DiagLog.add("[confirm] Attempt \(myAttempt) timed out, coord confirmation gave up (\(String(format: "%.2f", elapsed))s))")
-                    completion(false)
-                }
+            let dLat = abs(r.lat - expectedLat)
+            let dLon = abs(r.lon - expectedLon)
+            if r.enabled && dLat < 1e-5 && dLon < 1e-5 {
+                DiagLog.add("[verify] Go coords match explicit start options")
+            } else {
+                DiagLog.add("[verify] WARNING mismatch Go=(\(String(format: "%.6f", r.lat)), \(String(format: "%.6f", r.lon))) expected=(\(String(format: "%.6f", expectedLat)), \(String(format: "%.6f", expectedLon))) enabled=\(r.enabled)")
             }
         }
-        attempt()
     }
 
     /// 主动触发 VPN 连接(冷启动场景)。事件驱动等 .connected,然后给 Go 代理一段就绪缓冲再回调。
@@ -937,16 +951,9 @@ struct MapHomeView: View {
                         DiagLog.add("[cold-start] VPN connected, starting Go proxy readiness probe (timeout 10s)")
                         probeGoProxyReady(timeout: 10) { ready in
                             if ready {
-                                DiagLog.add("[cold-start] Go TCP ready, starting coord confirmation (timeout 15s)")
-                                confirmCoordsReady(expectedLat: expectedLat, expectedLon: expectedLon, timeout: 15) { matched in
-                                    if matched {
-                                        DiagLog.add("[cold-start] Coords confirmed, callback completion(true)")
-                                        completion(true, nil)
-                                    } else {
-                                        DiagLog.add("[cold-start] Coord confirmation timed out, callback completion(false)")
-                                        completion(false, "Go proxy ready but coord confirmation timed out, please retry")
-                                    }
-                                }
+                                DiagLog.add("[cold-start] Go TCP ready; coordinates were supplied in start options")
+                                verifyGoCoordsDiagnostic(expectedLat: expectedLat, expectedLon: expectedLon)
+                                completion(true, nil)
                             } else {
                                 DiagLog.add("[cold-start] Go TCP readiness probe timed out, callback completion(false)")
                                 completion(false, "Go proxy readiness timed out, please retry")
@@ -984,8 +991,12 @@ struct MapHomeView: View {
                 }
 
                 do {
-                    try manager.connection.startVPNTunnel()
-                    DiagLog.add("[cold-start] startVPNTunnel called, waiting for .connected event")
+                    try startTunnelWithCoordinates(
+                        manager: manager,
+                        latitude: expectedLat,
+                        longitude: expectedLon
+                    )
+                    DiagLog.add("[cold-start] startTunnel(options:) called, waiting for .connected event")
                 } catch {
                     finish(false, "VPN start failed: \(error.localizedDescription)")
                     return
@@ -1033,20 +1044,12 @@ struct MapHomeView: View {
                 DiagLog.add("[hot-restart] VPN reconnected, starting Go proxy readiness probe (timeout 10s)")
                 probeGoProxyReady(timeout: 10) { ready in
                     if ready {
-                        DiagLog.add("[hot-restart] Go TCP ready, starting coord confirmation (timeout 15s)")
-                        confirmCoordsReady(expectedLat: expectedLat, expectedLon: expectedLon, timeout: 15) { matched in
-                            if matched {
-                                DiagLog.add("[hot-restart] Coords confirmed, showing restart Location Services tutorial in 0.3s")
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                    showRestartLocationGuide = true
-                                    DiagLog.add("[hot-restart] Restart Location Services tutorial shown")
-                                    isSpoofing = false
-                                }
-                            } else {
-                                DiagLog.add("[hot-restart] Coord confirmation timed out, setting failed")
-                                spoofingState = .failed(reason: "Coordinate confirmation timed out. Please retry.")
-                                isSpoofing = false
-                            }
+                        DiagLog.add("[hot-restart] Go TCP ready; coordinates were supplied in start options")
+                        verifyGoCoordsDiagnostic(expectedLat: expectedLat, expectedLon: expectedLon)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            showRestartLocationGuide = true
+                            DiagLog.add("[hot-restart] Restart Location Services tutorial shown")
+                            isSpoofing = false
                         }
                     } else {
                         DiagLog.add("[hot-restart] Go TCP readiness probe timed out, setting failed")
@@ -1079,7 +1082,11 @@ struct MapHomeView: View {
                 DiagLog.add("[hot-restart] phase 0→1: tunnel stopped, calling startVPNTunnel waiting for .connected")
                 state.phase = 1
                 do {
-                    try manager.connection.startVPNTunnel()
+                    try startTunnelWithCoordinates(
+                        manager: manager,
+                        latitude: expectedLat,
+                        longitude: expectedLon
+                    )
                 } catch {
                     finish(false, "VPN start failed: \(error.localizedDescription)")
                 }
@@ -1096,7 +1103,11 @@ struct MapHomeView: View {
         if manager.connection.status == .disconnected || manager.connection.status == .invalid {
             state.phase = 1
             do {
-                try manager.connection.startVPNTunnel()
+                try startTunnelWithCoordinates(
+                    manager: manager,
+                    latitude: expectedLat,
+                    longitude: expectedLon
+                )
             } catch {
                 finish(false, "VPN start failed: \(error.localizedDescription)")
             }

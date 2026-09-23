@@ -32,3 +32,9 @@ Original source baseline: `bfb44fa3b00e2cc8820536fb58e375d7269ef90a`. See `docs/
 - GitHub now contains exactly one Release: tag `latest`, title `Location Spoofer 2026.39.3`.
 - The Release contains exactly one asset: `LocationSpoofer-unsigned.ipa`, 4,207,689 bytes, SHA-256 `02718de3d44f69a950d0e117d0e0e037b9a208a5f4e4dc8713b78b6e0dcb4220`.
 - Historical Actions artifacts were deleted; both the previous successful run and the rolling-Release run report zero retained workflow artifacts.
+
+### 2026-09-23 runtime fix: coordinate handoff
+- A real-device test showed `Go proxy ready but coord confirmation timed out`. The proxy was listening, but activation incorrectly depended on cross-process App Group/UserDefaults synchronization plus IPC confirmation.
+- Coordinates are now authoritative in `NETunnelProviderSession.startTunnel(options:)`: the app passes `spoofEnabled`, `spoofLatitude` and `spoofLongitude`; `PacketTunnelProvider.startTunnel(options:)` uses those values directly and only falls back to App Group storage when options are absent.
+- IPC `getCoords` remains diagnostic only and must never block activation. TCP readiness remains the runtime gate because Go receives the explicit coordinates before starting its HTTP proxy.
+- Keep this direct start-options handoff when merging upstream changes.

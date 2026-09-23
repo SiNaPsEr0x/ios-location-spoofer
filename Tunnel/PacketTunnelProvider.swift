@@ -22,11 +22,35 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         goLocationSpoofer?.hello()
         let version = goLocationSpoofer?.version() ?? "unknown"
         os_log("Go spoofer library version: %@", log: OSLog.default, type: .info, version)
-        let coords = configuration.currentCoordinates
-        let lat = coords?.latitude
-        let lon = coords?.longitude
+        var lat: Double?
+        var lon: Double?
+        var coordinateSource = "app-group fallback"
+
+        if let enabled = options?["spoofEnabled"] as? NSNumber,
+           enabled.boolValue,
+           let latNumber = options?["spoofLatitude"] as? NSNumber,
+           let lonNumber = options?["spoofLongitude"] as? NSNumber {
+            lat = latNumber.doubleValue
+            lon = lonNumber.doubleValue
+            coordinateSource = "start options"
+
+            // Persist as a fallback for starts initiated without explicit options.
+            configuration.setCoordinates(latitude: latNumber.doubleValue, longitude: lonNumber.doubleValue)
+        } else {
+            let coords = configuration.currentCoordinates
+            lat = coords?.latitude
+            lon = coords?.longitude
+        }
+
         if let lat = lat, let lon = lon {
-            os_log("Location spoofing active: %.6f, %.6f", log: OSLog.default, type: .info, lat, lon)
+            os_log(
+                "Location spoofing active from %{public}@: %.6f, %.6f",
+                log: OSLog.default,
+                type: .info,
+                coordinateSource,
+                lat,
+                lon
+            )
         } else {
             os_log("No coordinates configured - running in transparent mode", log: OSLog.default, type: .info)
         }
