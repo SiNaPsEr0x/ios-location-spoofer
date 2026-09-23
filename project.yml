@@ -3,23 +3,14 @@ options:
   bundleIdPrefix: dev.duti.location-spoofer
   deploymentTarget:
     iOS: "18.0"
-  xcodeVersion: "15.0"
+  xcodeVersion: "16.0"
   generateEmptyDirectories: true
-
-packages:
-  SwiftNIO:
-    url: https://github.com/apple/swift-nio
-    from: "2.0.0"
-  swift-log:
-    url: https://github.com/apple/swift-log
-    from: "1.0.0"
 
 settings:
   base:
-    SWIFT_VERSION: "5.9"
+    SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "1.0.0"
     CURRENT_PROJECT_VERSION: "1"
-    DEVELOPMENT_TEAM: "RL3VF87PQT"
 
 targets:
   location-spoofer:
@@ -27,20 +18,15 @@ targets:
     platform: iOS
     sources:
       - path: App
-        excludes:
-          - "**/.DS_Store"
+        excludes: ["**/.DS_Store"]
       - path: Resources
-        excludes:
-          - "**/.DS_Store"
-      - path: Resources/Assets.xcassets
+        excludes: ["**/.DS_Store", "Info.plist", "*.entitlements"]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.duti.location-spoofer
         INFOPLIST_FILE: Resources/Info.plist
         CODE_SIGN_ENTITLEMENTS: Resources/location-spoofer.entitlements
-        CODE_SIGN_STYLE: Manual
-        CODE_SIGN_IDENTITY: "Apple Distribution"
-        PROVISIONING_PROFILE_SPECIFIER: "LocationSpoofer AppStore"
+        CODE_SIGN_STYLE: Automatic
         ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: "$(inherited)"
         LD_RUNPATH_SEARCH_PATHS:
           - "$(inherited)"
@@ -55,26 +41,13 @@ targets:
     platform: iOS
     sources:
       - path: Tunnel
-        excludes:
-          - "**/.DS_Store"
-      - path: GoSpoofer
-        excludes:
-          - "**/*.go"
-          - "**/*.sh"
-          - "build/**"
-          - "go.mod"
-          - "go.sum"
-          - "CGoLocationSpoofer.modulemap"
-          - "libgolocationspoofer.a"
-    
+        excludes: ["**/.DS_Store", "Info.plist", "*.entitlements"]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.duti.location-spoofer.tunnel
         INFOPLIST_FILE: Tunnel/Info.plist
         CODE_SIGN_ENTITLEMENTS: Tunnel/location-spoofer-tunnel.entitlements
-        CODE_SIGN_STYLE: Manual
-        CODE_SIGN_IDENTITY: "Apple Distribution"
-        PROVISIONING_PROFILE_SPECIFIER: "LocationSpoofer Tunnel AppStore"
+        CODE_SIGN_STYLE: Automatic
         LD_RUNPATH_SEARCH_PATHS:
           - "$(inherited)"
           - "@executable_path/Frameworks"
@@ -83,16 +56,11 @@ targets:
         HEADER_SEARCH_PATHS:
           - "$(PROJECT_DIR)/GoSpoofer"
         SWIFT_OBJC_BRIDGING_HEADER: "Tunnel/location-spoofer-tunnel-Bridging-Header.h"
-        OTHER_LDFLAGS:
-          - "$(inherited)"
-          - "-lgolocationspoofer"
-        LIBRARY_SEARCH_PATHS:
-          - "$(PROJECT_DIR)/GoSpoofer/build"
     dependencies:
-      - package: SwiftNIO
-        product: NIOPosix
-      - package: swift-log
-        product: Logging
+      # Link the static archive, never copy it or the Go executable as a resource.
+      - framework: GoSpoofer/build/libgolocationspoofer.a
+        embed: false
+        codeSign: false
       - sdk: NetworkExtension.framework
 
 schemes:

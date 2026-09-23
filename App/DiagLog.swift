@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// 单条诊断日志记录:时间戳 + 消息。
 struct DiagEntry: Identifiable {

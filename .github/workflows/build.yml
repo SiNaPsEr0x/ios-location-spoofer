@@ -1,192 +1,122 @@
-name: Build and Upload to TestFlight
+name: Build unsigned IPA
 
 on:
   push:
     branches: [main]
+    paths:
+      - 'App/**'
+      - 'Tunnel/**'
+      - 'Resources/**'
+      - 'GoSpoofer/**/*.go'
+      - 'GoSpoofer/**/*.h'
+      - 'GoSpoofer/*.modulemap'
+      - 'GoSpoofer/go.mod'
+      - 'GoSpoofer/go.sum'
+      - 'GoSpoofer/make.sh'
+      - 'project.yml'
+      - 'scripts/ci/**'
+      - '!**/*.md'
+      - '!**/.DS_Store'
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unsigned-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: '1'
+  HOMEBREW_NO_INSTALL_CLEANUP: '1'
+  GOTOOLCHAIN: local
 
 jobs:
   build:
-    runs-on: macos-15
+    name: Test and build one unsigned IPA
+    runs-on: macos-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
-      - name: Select latest Xcode
+      - name: Set up Go from go.mod
+        id: go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: GoSpoofer/go.mod
+          cache-dependency-path: GoSpoofer/go.sum
+          cache: true
+
+      - name: Prepare and fingerprint Apple toolchain
+        id: toolchain
         run: |
-          ls /Applications/ | grep Xcode
-          LATEST_XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
-          echo "Using $LATEST_XCODE"
-          sudo xcode-select -s "$LATEST_XCODE"
+          set -euo pipefail
+          brew list --versions xcodegen >/dev/null 2>&1 || brew install xcodegen
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
+          xcodegen --version
+          fingerprint=$({ xcodebuild -version; xcrun --sdk iphoneos --show-sdk-version; xcodegen --version; } | shasum -a 256 | awk '{print $1}')
+          echo "id=$fingerprint" >> "$GITHUB_OUTPUT"
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - name: Run Go tests and race detector
+        working-directory: GoSpoofer
+        run: |
+          set -euo pipefail
+          go mod verify
+          go test -mod=readonly -race -count=1 ./...
+          go vet -mod=readonly ./...
+
+      - name: Cache Go iOS static library and matching header
+        id: go-library
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
-          go-version: '1.25'
+          path: GoSpoofer/build
+          key: go-ios-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('GoSpoofer/**/*.go', 'GoSpoofer/go.mod', 'GoSpoofer/go.sum', 'GoSpoofer/make.sh') }}
 
-      - name: Build Go static library
+      - name: Compile Go for iOS arm64
+        if: steps.go-library.outputs.cache-hit != 'true'
+        run: bash GoSpoofer/make.sh
+
+      - name: Restore matching C header and generate Xcode project
         run: |
-          cd GoSpoofer
-          chmod +x make.sh
-          ./make.sh
+          set -euo pipefail
+          test -s GoSpoofer/build/libgolocationspoofer.a
+          test -s GoSpoofer/build/libgolocationspoofer.h
+          cp GoSpoofer/build/libgolocationspoofer.h GoSpoofer/golocationspoofer.h
+          xcrun lipo -verify_arch arm64 GoSpoofer/build/libgolocationspoofer.a
+          xcodegen generate --spec project.yml
 
-      - name: Install xcodegen and regenerate project
-        run: |
-          brew install xcodegen
-          cd $GITHUB_WORKSPACE
-          xcodegen generate
-          # 重新应用 HACKS.md 的 patch：把 libgolocationspoofer.a 从 Resources build phase 移到 Frameworks build phase
-          # 检查 pbxproj 中 libgolocationspoofer.a 是否在 PBXResourcesBuildPhase 里，如果是就移到 PBXFrameworksBuildPhase
-          python3 << 'PYEOF'
-          import re
-
-          with open("location-spoofer.xcodeproj/project.pbxproj", "r") as f:
-              content = f.read()
-
-          # 找到 libgolocationspoofer.a 的 PBXBuildFile 引用 ID
-          # 然后确保它在 Frameworks phase 而不是 Resources phase
-          lines = content.split("\n")
-
-          # 找到 libgolocationspoofer.a 的 file ref
-          lib_ref_id = None
-          lib_build_id = None
-          for line in lines:
-              if "libgolocationspoofer.a" in line and "PBXFileReference" not in line and "PBXBuildFile" in line:
-                  lib_build_id = line.strip().split(" ")[0]
-              if "libgolocationspoofer.a" in line and "PBXFileReference" in line:
-                  lib_ref_id = line.strip().split(" ")[0]
-
-          if lib_build_id:
-              # Remove from Resources phase and add to Frameworks phase
-              in_resources = False
-              in_frameworks = False
-              new_lines = []
-              resources_section = False
-              frameworks_section = False
-
-              for i, line in enumerate(lines):
-                  if "/* Resources */" in line and "PBXResourcesBuildPhase" in line:
-                      resources_section = True
-                  if "/* Frameworks */" in line and "PBXFrameworksBuildPhase" in line:
-                      frameworks_section = True
-
-                  if resources_section and lib_build_id in line:
-                      resources_section = False
-                      continue  # skip this line (remove from resources)
-
-                  if frameworks_section and "files = (" in line:
-                      new_lines.append(line)
-                      # Check if lib is already in frameworks
-                      if lib_build_id not in content.split("/* Frameworks */")[1].split("/* End")[0] if "/* Frameworks */" in content else "":
-                          new_lines.append(f"\t\t\t\t{lib_build_id} /* libgolocationspoofer.a in Frameworks */,")
-                      frameworks_section = False
-                      continue
-
-                  new_lines.append(line)
-
-              with open("location-spoofer.xcodeproj/project.pbxproj", "w") as f:
-                  f.write("\n".join(new_lines))
-              print("HACKS.md patch applied")
-          else:
-              print("WARNING: libgolocationspoofer.a build ref not found, skipping patch")
-          PYEOF
-
-      - name: Install Apple certificate
-        env:
-          CERTIFICATE_P12: ${{ secrets.CERTIFICATE_P12 }}
-          CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
-        run: |
-          CERT_PATH=$RUNNER_TEMP/cert.p12
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          echo -n "$CERTIFICATE_P12" | base64 --decode -o $CERT_PATH
-          security create-keychain -p "" $KEYCHAIN_PATH
-          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "" $KEYCHAIN_PATH
-          security import $CERT_PATH -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-          security set-key-partition-list -S apple-tool:,apple: -k "" $KEYCHAIN_PATH
-          security list-keychain -d user -s $KEYCHAIN_PATH
-
-      - name: Install provisioning profiles
-        env:
-          APP_PROFILE: ${{ secrets.APP_PROVISIONING_PROFILE }}
-          TUNNEL_PROFILE: ${{ secrets.TUNNEL_PROVISIONING_PROFILE }}
-        run: |
-          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          echo -n "$APP_PROFILE" | base64 --decode -o ~/Library/MobileDevice/Provisioning\ Profiles/app.mobileprovision
-          echo -n "$TUNNEL_PROFILE" | base64 --decode -o ~/Library/MobileDevice/Provisioning\ Profiles/tunnel.mobileprovision
-
-      - name: Setup App Store Connect API key
-        env:
-          API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
-        run: |
-          mkdir -p $HOME/private_keys
-          echo -n "$API_KEY_P8" | base64 --decode -o $HOME/private_keys/AuthKey_${{ secrets.APP_STORE_CONNECT_KEY_ID }}.p8
-
-      - name: Build archive
-        run: |
-          xcodebuild archive \
-            -project location-spoofer.xcodeproj \
-            -scheme location-spoofer \
-            -archivePath $RUNNER_TEMP/LocationSpoofer.xcarchive \
-            -destination "generic/platform=iOS" \
-            CODE_SIGN_STYLE=Manual \
-            DEVELOPMENT_TEAM=RL3VF87PQT \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath $HOME/private_keys/AuthKey_${{ secrets.APP_STORE_CONNECT_KEY_ID }}.p8 \
-            -authenticationKeyID ${{ secrets.APP_STORE_CONNECT_KEY_ID }} \
-            -authenticationKeyIssuerID ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }} \
-            CODE_SIGN_IDENTITY="Apple Distribution" \
-            APP_PROVISIONING_PROFILE="LocationSpoofer AppStore" \
-            TUNNEL_PROVISIONING_PROFILE="LocationSpoofer Tunnel AppStore" \
-            CURRENT_PROJECT_VERSION=$GITHUB_RUN_NUMBER
-
-      - name: Export IPA
-        run: |
-          cat > $RUNNER_TEMP/export.plist << EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>method</key>
-            <string>app-store-connect</string>
-            <key>teamID</key>
-            <string>RL3VF87PQT</string>
-            <key>signingStyle</key>
-            <string>manual</string>
-            <key>provisioningProfiles</key>
-            <dict>
-              <key>dev.duti.location-spoofer</key>
-              <string>LocationSpoofer AppStore</string>
-              <key>dev.duti.location-spoofer.tunnel</key>
-              <string>LocationSpoofer Tunnel AppStore</string>
-            </dict>
-            <key>uploadSymbols</key>
-            <true/>
-          </dict>
-          </plist>
-          EOF
-          xcodebuild -exportArchive \
-            -archivePath $RUNNER_TEMP/LocationSpoofer.xcarchive \
-            -exportOptionsPlist $RUNNER_TEMP/export.plist \
-            -exportPath $RUNNER_TEMP/export \
-            -authenticationKeyPath $HOME/private_keys/AuthKey_${{ secrets.APP_STORE_CONNECT_KEY_ID }}.p8 \
-            -authenticationKeyID ${{ secrets.APP_STORE_CONNECT_KEY_ID }} \
-            -authenticationKeyIssuerID ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-
-      - name: Upload to TestFlight
-        env:
-          API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-        run: |
-          xcrun altool --upload-app \
-            -f $RUNNER_TEMP/export/*.ipa \
-            --type ios \
-            --apiKey $API_KEY_ID \
-            --apiIssuer $API_ISSUER_ID
-      - name: Upload IPA as Artifact
-        uses: actions/upload-artifact@v4
+      - name: Cache incremental Xcode build data
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
-          name: GPS-Tool-IPA
-          path: ${{ runner.temp }}/export/*.ipa
+          path: .build/DerivedData
+          key: xcode-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('App/**', 'Tunnel/**', 'Resources/**', 'GoSpoofer/**/*.go', 'GoSpoofer/**/*.h', 'GoSpoofer/go.mod', 'GoSpoofer/go.sum', 'GoSpoofer/make.sh', 'project.yml', 'scripts/ci/**') }}
+          restore-keys: |
+            xcode-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ steps.go.outputs.go-version }}-
+
+      - name: Build, package and verify unsigned IPA
+        id: ipa
+        run: bash scripts/ci/build-unsigned.sh
+
+      - name: Upload the single IPA directly
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          path: ${{ steps.ipa.outputs.path }}
+          archive: false
+          if-no-files-found: error
+          overwrite: true
           retention-days: 30
+
+      - name: Report download and cache status
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          LIBRARY_CACHE_HIT: ${{ steps.go-library.outputs.cache-hit }}
+        run: |
+          printf '\n[Download unsigned IPA](%s)\n\nGo library cache hit: `%s`\n' "$ARTIFACT_URL" "$LIBRARY_CACHE_HIT" >> "$GITHUB_STEP_SUMMARY"
