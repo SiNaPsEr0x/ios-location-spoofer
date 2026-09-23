@@ -8,7 +8,7 @@
 - Automatic builds run only for app/extension source, resources, Go source/dependencies, project.yml or build-script changes on main. Markdown, README, AGENTS.md and workflow-only edits must not automatically compile. Use Run workflow when validating CI-only edits.
 - Keep Go dependencies, the generated Go library/header pair and Xcode incremental build caches. Cache keys must include the Apple toolchain and relevant source inputs.
 - Combine related changes into one commit on main where possible; never force-push the main branch to overwrite someone else's work. The stable Release tag `latest` is intentionally moved to the verified build commit.
-- Keep the recovery copy in `SiNaPsEr0x/Pubblici/backups/github-actions/ios-location-spoofer/` up to date when changing CI. Do not put backup YAML under Pubblici/.github/workflows. Never copy signing material or tokens.
+- Keep the recovery copy in `SiNaPsEr0x/Pubblici/ios-location-spoofer/backup/` up to date when changing CI. Do not put backup YAML under Pubblici/.github/workflows. Never copy signing material or tokens.
 
 ## Project invariants
 - `project.yml` is the source of truth. CI regenerates the checked-in Xcode project; editing only project.pbxproj does not alter CI output.
