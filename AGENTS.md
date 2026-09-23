@@ -25,3 +25,9 @@ Original source baseline: `bfb44fa3b00e2cc8820536fb58e375d7269ef90a`. See `docs/
 ### Validation follow-up
 - Run 1: Go race tests/vet passed; fixed Apple `lipo` argument order.
 - Run 2: Go tests, Go iOS archive and XcodeGen passed; Xcode exposed two pre-existing unterminated Swift diagnostic strings, one unescaped settings string, and a missing `libgolocationspoofer` search path. These are fixed in the next source commit; final IPA success must still be verified from Actions.
+
+### Final verification
+- Run 3 (`35912394315`) on commit `232c1c62ff4d52db4a5ef1d0e3229a29d21af2db` completed successfully on 2026-09-23.
+- Go module verification, race tests, vet, iOS arm64 c-archive build, XcodeGen, Xcode archive, unsigned Mach-O checks, IPA integrity checks and direct single-file artifact upload all passed.
+- Final artifact: `LocationSpoofer-unsigned.ipa`, 4,207,693 bytes, SHA-256 `7f4fc03af7be6bae698a473d3224d4a1484cbf29d7ab41d087f2d0553013eb23`, artifact ID `10773308543`.
+- CI saved Go, Go iOS archive/header and Xcode DerivedData caches after the successful run.
